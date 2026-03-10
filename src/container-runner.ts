@@ -10,6 +10,7 @@ import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
+  COPILOT_MODEL,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   GROUPS_DIR,
@@ -26,6 +27,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -113,40 +115,19 @@ function buildVolumeMounts(
     }
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
+  // Per-group Copilot sessions directory (isolated from other groups)
+  // Each group gets their own .copilot/ to prevent cross-group session access.
+  // The configDir is set to /home/node/.copilot in the agent-runner session config.
   const groupSessionsDir = path.join(
     DATA_DIR,
     'sessions',
     group.folder,
-    '.claude',
+    '.copilot',
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
-  const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
-  }
 
-  // Sync skills from container/skills/ into each group's .claude/skills/
+  // Sync skills from container/skills/ into each group's .copilot/skills/
+  // These are loaded by the Copilot CLI via the skillDirectories session config.
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
@@ -159,7 +140,7 @@ function buildVolumeMounts(
   }
   mounts.push({
     hostPath: groupSessionsDir,
-    containerPath: '/home/node/.claude',
+    containerPath: '/home/node/.copilot',
     readonly: false,
   });
 
@@ -221,25 +202,35 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Route API traffic through the credential proxy (containers never see real secrets)
-  args.push(
-    '-e',
-    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
-  );
+  // Pass model name to the agent runner
+  args.push('-e', `NANOCLAW_MODEL=${COPILOT_MODEL}`);
 
-  // Mirror the host's auth method with a placeholder value.
-  // API key mode: SDK sends x-api-key, proxy replaces with real key.
-  // OAuth mode:   SDK exchanges placeholder token for temp API key,
-  //               proxy injects real OAuth token on that exchange request.
   const authMode = detectAuthMode();
-  if (authMode === 'api-key') {
-    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
-  } else {
-    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
-  }
 
-  // Runtime-specific args for host gateway resolution
-  args.push(...hostGatewayArgs());
+  if (authMode === 'copilot') {
+    // GitHub Copilot native mode: pass the real token to the container.
+    // The Copilot CLI authenticates with GitHub's API using this token.
+    // The credential proxy is not used in this mode.
+    const secrets = readEnvFile(['GITHUB_COPILOT_TOKEN']);
+    args.push('-e', `GITHUB_COPILOT_TOKEN=${secrets.GITHUB_COPILOT_TOKEN}`);
+    args.push(...hostGatewayArgs());
+  } else {
+    // BYOK Anthropic mode (api-key) or OAuth fallback:
+    // Route API traffic through the credential proxy so the container never
+    // sees the real credentials. The proxy injects them at the HTTP level.
+    args.push(
+      '-e',
+      `NANOCLAW_PROXY_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+    );
+    if (authMode === 'api-key') {
+      // Placeholder injected by the proxy with the real ANTHROPIC_API_KEY
+      args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    } else {
+      // OAuth mode (legacy): placeholder replaced by proxy on token exchange
+      args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+    }
+    args.push(...hostGatewayArgs());
+  }
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),

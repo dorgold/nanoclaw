@@ -17,7 +17,7 @@ import { request as httpRequest, RequestOptions } from 'http';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
-export type AuthMode = 'api-key' | 'oauth';
+export type AuthMode = 'api-key' | 'oauth' | 'copilot';
 
 export interface ProxyConfig {
   authMode: AuthMode;
@@ -120,6 +120,8 @@ export function startCredentialProxy(
 
 /** Detect which auth mode the host is configured for. */
 export function detectAuthMode(): AuthMode {
-  const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
-  return secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
+  const secrets = readEnvFile(['ANTHROPIC_API_KEY', 'GITHUB_COPILOT_TOKEN']);
+  if (secrets.ANTHROPIC_API_KEY) return 'api-key';
+  if (secrets.GITHUB_COPILOT_TOKEN) return 'copilot';
+  return 'oauth';
 }

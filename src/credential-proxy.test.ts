@@ -11,7 +11,7 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import { startCredentialProxy } from './credential-proxy.js';
+import { startCredentialProxy, detectAuthMode } from './credential-proxy.js';
 
 function makeRequest(
   port: number,
@@ -188,5 +188,31 @@ describe('credential-proxy', () => {
 
     expect(res.statusCode).toBe(502);
     expect(res.body).toBe('Bad Gateway');
+  });
+});
+
+describe('detectAuthMode', () => {
+  afterEach(() => {
+    for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+  });
+
+  it('returns api-key when ANTHROPIC_API_KEY is set', () => {
+    mockEnv.ANTHROPIC_API_KEY = 'sk-ant-test';
+    expect(detectAuthMode()).toBe('api-key');
+  });
+
+  it('returns copilot when GITHUB_COPILOT_TOKEN is set and no ANTHROPIC_API_KEY', () => {
+    mockEnv.GITHUB_COPILOT_TOKEN = 'ghp_test123';
+    expect(detectAuthMode()).toBe('copilot');
+  });
+
+  it('returns api-key when both ANTHROPIC_API_KEY and GITHUB_COPILOT_TOKEN are set', () => {
+    mockEnv.ANTHROPIC_API_KEY = 'sk-ant-test';
+    mockEnv.GITHUB_COPILOT_TOKEN = 'ghp_test123';
+    expect(detectAuthMode()).toBe('api-key');
+  });
+
+  it('returns oauth when neither ANTHROPIC_API_KEY nor GITHUB_COPILOT_TOKEN is set', () => {
+    expect(detectAuthMode()).toBe('oauth');
   });
 });

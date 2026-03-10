@@ -30,8 +30,9 @@ RUN apt-get update && apt-get install -y \
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser and claude-code globally
-RUN npm install -g agent-browser @anthropic-ai/claude-code
+# Install agent-browser globally (for browser automation in agent tasks)
+# The Copilot CLI is bundled within @github/copilot-sdk and resolved automatically
+RUN npm install -g agent-browser
 
 # Create app directory
 WORKDIR /app
